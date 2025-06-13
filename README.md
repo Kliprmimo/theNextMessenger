@@ -5,29 +5,29 @@ klient wysyła zapytanie o istnienie sewera [server discovery] na które serwer 
 
 
 [tcp]
-klient łączy sie z serwerem gdzie następuje login/rejestracja
-klient wybiera użytkownika danego użytkownika
-serwer odsyła wiadomości do klienta +5 z starych
+klient łączy sie z serwerem gdzie następuje login/rejestracja\
+klient wybiera użytkownika danego użytkownika\
+serwer odsyła wiadomości do klienta +5 z starych\
 klient może wysłać wiadomości do tego użytkownika
 
 message format:
-64b     timestamp
-16B     sender
+64b     timestamp\
+16B     sender\
 255B    message
 
 
 Database:
-users
-    ID
+users\
+    ID\
     Username
 
-messages(one per each user conversation)
-    ID
-    Timestamp
-    SentByID
+messages(one per each user conversation)\
+    ID\
+    Timestamp\
+    SentByID\
     Read?
 
 
-format reklamowania multicastem:
+format reklamowania multicastem:\
     "theNextMessenger"[ipaddr]
     

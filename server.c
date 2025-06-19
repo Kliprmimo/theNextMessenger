@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <libpq-fe.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -38,18 +39,100 @@ int message_count = 0;
 
 pthread_mutex_t data_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int find_user_index(const char *name) {
-    for (int i = 0; i < user_count; ++i) {
-        if (strcmp(users[i].username, name) == 0)
-            return i;
+int get_id(PGconn *conn, const char *username) {
+    const char *paramValues[1] = { username };
+    PGresult *res = PQexecParams(conn,
+        "SELECT id FROM users WHERE username = $1",
+        1, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Query failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -2;
     }
+
+    if (PQntuples(res) == 0) {
+        PQclear(res);
+        return -1; 
+    }
+
+    char *user_id_str = PQgetvalue(res, 0, 0);
+    int user_id = atoi(user_id_str);
+    PQclear(res);
+    return user_id;
+}
+
+int check_login(PGconn *conn, const char *username, const char *password) {
+    const char *paramValues[2] = { username, password };
+    PGresult *res = PQexecParams(conn,
+        "SELECT id FROM users WHERE username = $1 AND password = $2",
+        2, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Query failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -2;
+    }
+
+    if (PQntuples(res) == 1) {
+        char *user_id_str = PQgetvalue(res, 0, 0);
+        int user_id = atoi(user_id_str);
+        PQclear(res);
+        return user_id;
+    }
+
+    PQclear(res);
     return -1;
+}
+
+int register_user(PGconn *conn, const char *username, const char *password) {
+    const char *checkParams[1] = { username };
+    PGresult *res = PQexecParams(conn,
+        "SELECT id FROM users WHERE username = $1",
+        1, NULL, checkParams, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Check query failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -2;
+    }
+
+    if (PQntuples(res) > 0) {
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
+
+    const char *insertParams[2] = { username, password };
+    res = PQexecParams(conn,
+        "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id",
+        2, NULL, insertParams, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Insert failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -2;
+    }
+
+    char *user_id_str = PQgetvalue(res, 0, 0);
+    int user_id = atoi(user_id_str);
+    PQclear(res);
+    return user_id;
 }
 
 void handle_client(int client_sock) {
     char buffer[512] = {0};
     char current_user[USERNAME_MAX] = {0};
     char chat_with[USERNAME_MAX] = {0};
+
+    PGconn *conn = PQconnectdb("host=localhost dbname=chat_db user=admin password=admin");
+
+    if (PQstatus(conn) != CONNECTION_OK) {
+        PQfinish(conn);
+        send(client_sock, "ERROR: DB fail\n", 15, 0);
+        close(client_sock);
+        return;
+    }
 
     // Login/Register
     ssize_t bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
@@ -59,16 +142,16 @@ void handle_client(int client_sock) {
         return;
     }
     buffer[bytes_received] = '\0';
+    char type[32], username[32], password[32];
 
-    if (strncmp(buffer, "LOGIN ", 6) == 0) {
-        if (sscanf(buffer + 6, "%15s", current_user) != 1) {
-            send(client_sock, "ERROR: invalid username format\n", 31, 0);
-            close(client_sock);
-            return;
-        }
-        
+    if (sscanf(buffer, "%31s %31s %31s", type, username, password) != 3) {
+        send(client_sock, "ERROR: Invalid input format.\n", 30, 0);
+        close(client_sock);
+        return;
+    }
+    if (strcmp(type, "LOGIN") == 0) {
         pthread_mutex_lock(&data_lock);
-        int idx = find_user_index(current_user);
+        int idx = check_login(conn, username, password);
         pthread_mutex_unlock(&data_lock);
 
         if (idx == -1) {
@@ -82,17 +165,12 @@ void handle_client(int client_sock) {
             return;
         }
     } 
-    else if (strncmp(buffer, "REGISTER ", 9) == 0) {
-        if (sscanf(buffer + 9, "%15s", current_user) != 1) {
-            send(client_sock, "ERROR: invalid username format\n", 31, 0);
-            close(client_sock);
-            return;
-        }
-
+    else 
+    if (strcmp(type, "REGISTER") == 0) {
+        
         pthread_mutex_lock(&data_lock);
-        int idx = find_user_index(current_user);
-        if (idx == -1 && user_count < MAX_USERS) {
-            strncpy(users[user_count++].username, current_user, USERNAME_MAX);
+        int idx = register_user(conn, username, password);
+        if (idx != -1) {
             pthread_mutex_unlock(&data_lock);
             if (send(client_sock, "OK\n", 3, 0) <= 0) {
                 perror("send failed");
@@ -129,7 +207,7 @@ void handle_client(int client_sock) {
         }
 
         pthread_mutex_lock(&data_lock);
-        int idx = find_user_index(chat_with);
+        int idx = get_id(conn, username);
         pthread_mutex_unlock(&data_lock);
 
         if (idx == -1) {

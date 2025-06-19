@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <errno.h>
+#include <openssl/sha.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -15,6 +16,7 @@
 
 #define BUFFER_SIZE 512
 #define USERNAME_MAX 16
+#define PASSWORD_MAX 48
 #define MESSAGE_MAX 255
 
 typedef struct {
@@ -22,6 +24,14 @@ typedef struct {
     char sender[USERNAME_MAX];
     char message[MESSAGE_MAX];
 } __attribute__((packed)) Message;
+
+void hash_password(const char *password, char *output) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256((unsigned char *)password, strlen(password), hash);
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+        sprintf(output + (i * 2), "%02x", hash[i]);
+    output[64] = '\0';
+}
 
 void discover_server(char *server_ip) {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -213,6 +223,7 @@ int main() {
     // Login/Register
     char choice;
     char username[USERNAME_MAX] = {0};
+    char password[PASSWORD_MAX] = {0};
     char buffer[BUFFER_SIZE] = {0};
 
     printf("[L]ogin or [R]egister: ");
@@ -229,10 +240,21 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    printf("Password: ");
+    if (scanf("%15s", password) != 1) {
+        fprintf(stderr, "Failed to read password\n");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+    char hash[65];
+
+    hash_password(password, hash);
+
+
     if (choice == 'L' || choice == 'l') {
-        snprintf(buffer, sizeof(buffer), "LOGIN %s", username);
+        snprintf(buffer, sizeof(buffer), "LOGIN %s %s", username, hash);
     } else {
-        snprintf(buffer, sizeof(buffer), "REGISTER %s", username);
+        snprintf(buffer, sizeof(buffer), "REGISTER %s %s", username, hash);
     }
 
     ssize_t sent = send(sock, buffer, strlen(buffer), 0);

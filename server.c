@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <libpq-fe.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
@@ -7,9 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <unistd.h>
-#include <libpq-fe.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -20,30 +19,91 @@
 #define MAX_USERS 100
 #define MAX_MESSAGES 1024
 
+typedef struct connected_users_ll connected_users_ll;
+
+struct connected_users_ll {
+    int user_id;
+    int socket_fd;
+    connected_users_ll *next;
+};
+
+connected_users_ll *connected_users = NULL;
+
 typedef struct {
-    uint64_t timestamp;
-    char sender[USERNAME_MAX];
-    char message[MESSAGE_MAX];
-    char recipient[USERNAME_MAX];
+    int sender_id;
+    int receiver_id;
+    char message[MESSAGE_MAX + 1];
 } __attribute__((packed)) Message;
-
-typedef struct {
-    char username[USERNAME_MAX];
-} User;
-
-User users[MAX_USERS];
-int user_count = 0;
-
-Message messages[MAX_MESSAGES];
-int message_count = 0;
 
 pthread_mutex_t data_lock = PTHREAD_MUTEX_INITIALIZER;
 
+void add_connected_user(int user_id, int socket_fd) {
+    connected_users_ll *curr = connected_users;
+    while (curr != NULL) {
+        if (curr->user_id == user_id) {
+            curr->socket_fd = socket_fd;
+            return;
+        }
+        curr = curr->next;
+    }
+
+    connected_users_ll *new_node = malloc(sizeof(connected_users_ll));
+    if (!new_node) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    new_node->user_id = user_id;
+    new_node->socket_fd = socket_fd;
+    new_node->next = connected_users;
+    connected_users = new_node;
+}
+
+int is_user_connected(int user_id) {
+    connected_users_ll *curr = connected_users;
+    while (curr != NULL) {
+        if (curr->user_id == user_id) {
+            return 1;
+        }
+        curr = curr->next;
+    }
+    return 0;
+}
+
+int get_socket_by_user_id(int user_id) {
+    connected_users_ll *curr = connected_users;
+    while (curr != NULL) {
+        if (curr->user_id == user_id) {
+            return curr->socket_fd;
+        }
+        curr = curr->next;
+    }
+    return -1;
+}
+
+void remove_connected_user(int user_id) {
+    connected_users_ll *curr = connected_users;
+    connected_users_ll *prev = NULL;
+
+    while (curr != NULL) {
+        if (curr->user_id == user_id) {
+            if (prev == NULL) {
+                connected_users = curr->next;
+            } else {
+                prev->next = curr->next;
+            }
+            free(curr);
+            return;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+}
 int get_id(PGconn *conn, const char *username) {
-    const char *paramValues[1] = { username };
-    PGresult *res = PQexecParams(conn,
-        "SELECT id FROM users WHERE username = $1",
-        1, NULL, paramValues, NULL, NULL, 0);
+    const char *paramValues[1] = {username};
+    PGresult *res =
+        PQexecParams(conn, "SELECT id FROM users WHERE username = $1", 1, NULL,
+                     paramValues, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Query failed: %s\n", PQerrorMessage(conn));
@@ -53,7 +113,7 @@ int get_id(PGconn *conn, const char *username) {
 
     if (PQntuples(res) == 0) {
         PQclear(res);
-        return -1; 
+        return -1;
     }
 
     char *user_id_str = PQgetvalue(res, 0, 0);
@@ -63,10 +123,10 @@ int get_id(PGconn *conn, const char *username) {
 }
 
 int check_login(PGconn *conn, const char *username, const char *password) {
-    const char *paramValues[2] = { username, password };
-    PGresult *res = PQexecParams(conn,
-        "SELECT id FROM users WHERE username = $1 AND password = $2",
-        2, NULL, paramValues, NULL, NULL, 0);
+    const char *paramValues[2] = {username, password};
+    PGresult *res = PQexecParams(
+        conn, "SELECT id FROM users WHERE username = $1 AND password = $2", 2,
+        NULL, paramValues, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Query failed: %s\n", PQerrorMessage(conn));
@@ -85,11 +145,38 @@ int check_login(PGconn *conn, const char *username, const char *password) {
     return -1;
 }
 
+int insert_msg(PGconn *conn, int sender_id, int receiver_id,
+               const char *message) {
+    char sender_str[sizeof(int) + 1];
+    char receiver_str[sizeof(int) + 1];
+
+    snprintf(sender_str, sizeof(sender_str), "%d", sender_id);
+    snprintf(receiver_str, sizeof(receiver_str), "%d", receiver_id);
+
+    const char *insertParams[3] = {sender_str, receiver_str, message};
+
+    PGresult *res =
+        PQexecParams(conn,
+                     "INSERT INTO messages (sender_id, receiver_id, message) "
+                     "VALUES ($1, $2, $3) RETURNING id",
+                     3, NULL, insertParams, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Insert failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -2;
+    }
+
+    int inserted_id = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return inserted_id;
+}
+
 int register_user(PGconn *conn, const char *username, const char *password) {
-    const char *checkParams[1] = { username };
-    PGresult *res = PQexecParams(conn,
-        "SELECT id FROM users WHERE username = $1",
-        1, NULL, checkParams, NULL, NULL, 0);
+    const char *checkParams[1] = {username};
+    PGresult *res =
+        PQexecParams(conn, "SELECT id FROM users WHERE username = $1", 1, NULL,
+                     checkParams, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Check query failed: %s\n", PQerrorMessage(conn));
@@ -103,8 +190,9 @@ int register_user(PGconn *conn, const char *username, const char *password) {
     }
     PQclear(res);
 
-    const char *insertParams[2] = { username, password };
-    res = PQexecParams(conn,
+    const char *insertParams[2] = {username, password};
+    res = PQexecParams(
+        conn,
         "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id",
         2, NULL, insertParams, NULL, NULL, 0);
 
@@ -121,11 +209,13 @@ int register_user(PGconn *conn, const char *username, const char *password) {
 }
 
 void handle_client(int client_sock) {
+    int user_id;
+    int peer_id;
     char buffer[512] = {0};
-    char current_user[USERNAME_MAX] = {0};
-    char chat_with[USERNAME_MAX] = {0};
+    char peer_username[USERNAME_MAX] = {0};
 
-    PGconn *conn = PQconnectdb("host=localhost dbname=chat_db user=admin password=admin");
+    PGconn *conn =
+        PQconnectdb("host=localhost dbname=chat_db user=admin password=admin");
 
     if (PQstatus(conn) != CONNECTION_OK) {
         PQfinish(conn);
@@ -151,10 +241,10 @@ void handle_client(int client_sock) {
     }
     if (strcmp(type, "LOGIN") == 0) {
         pthread_mutex_lock(&data_lock);
-        int idx = check_login(conn, username, password);
+        user_id = check_login(conn, username, password);
         pthread_mutex_unlock(&data_lock);
 
-        if (idx == -1) {
+        if (user_id == -1) {
             send(client_sock, "ERROR: user not found\n", 22, 0);
             close(client_sock);
             return;
@@ -164,13 +254,11 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
-    } 
-    else 
-    if (strcmp(type, "REGISTER") == 0) {
-        
+    } else if (strcmp(type, "REGISTER") == 0) {
+
         pthread_mutex_lock(&data_lock);
-        int idx = register_user(conn, username, password);
-        if (idx != -1) {
+        user_id = register_user(conn, username, password);
+        if (user_id != -1) {
             pthread_mutex_unlock(&data_lock);
             if (send(client_sock, "OK\n", 3, 0) <= 0) {
                 perror("send failed");
@@ -183,40 +271,44 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
-    } 
-    else {
+    } else {
         send(client_sock, "ERROR: invalid command\n", 23, 0);
         close(client_sock);
         return;
     }
+    add_connected_user(user_id, client_sock);
 
     // Choose chat partner
     bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received <= 0) {
         perror("recv failed");
+        remove_connected_user(user_id);
         close(client_sock);
         return;
     }
     buffer[bytes_received] = '\0';
 
     if (strncmp(buffer, "CHATWITH ", 9) == 0) {
-        if (sscanf(buffer + 9, "%15s", chat_with) != 1) {
+        if (sscanf(buffer + 9, "%15s", peer_username) != 1) {
             send(client_sock, "ERROR: invalid username format\n", 31, 0);
+            remove_connected_user(user_id);
             close(client_sock);
             return;
         }
 
         pthread_mutex_lock(&data_lock);
-        int idx = get_id(conn, username);
+        peer_id = get_id(conn, peer_username);
         pthread_mutex_unlock(&data_lock);
 
-        if (idx == -1) {
+        if (peer_id == -1) {
             send(client_sock, "ERROR: user not found\n", 22, 0);
+            remove_connected_user(user_id);
             close(client_sock);
             return;
         }
         if (send(client_sock, "OK\n", 3, 0) <= 0) {
             perror("send failed");
+            remove_connected_user(user_id);
             close(client_sock);
             return;
         }
@@ -236,20 +328,31 @@ void handle_client(int client_sock) {
         buffer[bytes_received] = '\0';
 
         Message msg = {0};
-        msg.timestamp = time(NULL);
-        strncpy(msg.sender, current_user, USERNAME_MAX);
-        strncpy(msg.recipient, chat_with, USERNAME_MAX);
+        msg.sender_id = user_id;
+        msg.receiver_id = peer_id;
         strncpy(msg.message, buffer, MESSAGE_MAX);
-		printf("%s -> %s : %s\n", msg.sender, msg.recipient, msg.message);
-		fflush(stdout);
-
         pthread_mutex_lock(&data_lock);
-        if (message_count < MAX_MESSAGES) {
-            messages[message_count++] = msg;
-        }
+        int message_id =
+            insert_msg(conn, msg.sender_id, msg.receiver_id, msg.message);
         pthread_mutex_unlock(&data_lock);
+        if (message_id < 0) {
+            remove_connected_user(user_id);
+            close(client_sock);
+            return;
+        }
+		// to_do think if we want to just send messages of users are connected 1 to 1, send unread messages on connect change when messages are read to read
+        int peer_fd = get_socket_by_user_id(peer_id);
+        if (peer_fd != -1) {
+            if (send(peer_fd, msg.message, bytes_received, 0) == -1) {
+                perror("send failed");
+            }
+        }
+
+        printf("%d -> %d : %s\n", msg.sender_id, msg.receiver_id, msg.message);
+        fflush(stdout);
     }
 
+    remove_connected_user(user_id);
     close(client_sock);
 }
 
@@ -261,7 +364,8 @@ void *tcp_listener(void *_) {
     }
 
     int opt = 1;
-    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
+        0) {
         perror("setsockopt failed");
         close(server_sock);
         exit(EXIT_FAILURE);
@@ -296,7 +400,7 @@ void *tcp_listener(void *_) {
         printf("[TCP] Accepted new connection\n");
         pthread_t tid;
         if (pthread_create(&tid, NULL, (void *(*)(void *))handle_client,
-                          (void *)(intptr_t)client_sock)) {
+                           (void *)(intptr_t)client_sock)) {
             perror("pthread_create failed");
             close(client_sock);
             continue;
@@ -342,7 +446,7 @@ void *udp_discovery_responder(void *_) {
 
     while (1) {
         ssize_t n = recvfrom(sock, buf, sizeof(buf) - 1, 0,
-                            (struct sockaddr *)&cliaddr, &clilen);
+                             (struct sockaddr *)&cliaddr, &clilen);
         if (n <= 0) {
             perror("recvfrom failed");
             continue;
@@ -385,9 +489,10 @@ void *udp_discovery_responder(void *_) {
                 continue;
             }
 
-            snprintf(response, sizeof(response), "theNextMessenger[%s]", ip_str);
+            snprintf(response, sizeof(response), "theNextMessenger[%s]",
+                     ip_str);
             if (sendto(sock, response, strlen(response), 0,
-                      (struct sockaddr *)&cliaddr, clilen) <= 0) {
+                       (struct sockaddr *)&cliaddr, clilen) <= 0) {
                 perror("sendto failed");
             }
         }

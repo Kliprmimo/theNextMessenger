@@ -7,9 +7,10 @@ CREATE TABLE users (
 CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
     sender_id TEXT NOT NULL,
-    reciever_id TEXT NOT NULL,
+    receiver_id TEXT NOT NULL,
     message TEXT,
-    message_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    message_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	was_seen BOOL DEFAULT FALSE NOT NULL
 );
 
 

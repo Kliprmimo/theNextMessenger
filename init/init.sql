@@ -4,6 +4,14 @@ CREATE TABLE users (
     password TEXT NOT NULL
 );
 
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    sender_id TEXT NOT NULL,
+    reciever_id TEXT NOT NULL,
+    message TEXT,
+    message_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 
 -- INSERT INTO users (username, password)
 -- VALUES ('admin', 'some_hash'); 

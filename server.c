@@ -1,7 +1,9 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <libpq-fe.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <openssl/sha.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,7 +11,6 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <openssl/sha.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -25,6 +26,7 @@ typedef struct connected_users_ll connected_users_ll;
 struct connected_users_ll {
     int user_id;
     int socket_fd;
+    char *session_token;
     connected_users_ll *next;
 };
 
@@ -38,12 +40,27 @@ typedef struct {
 
 pthread_mutex_t data_lock = PTHREAD_MUTEX_INITIALIZER;
 
-void add_connected_user(int user_id, int socket_fd) {
+void generate_session_token(char *output) {
+    unsigned char buffer[32];
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0 || read(fd, buffer, sizeof(buffer)) != sizeof(buffer)) {
+        perror("random read failed");
+        exit(EXIT_FAILURE);
+    }
+    close(fd);
+
+    for (int i = 0; i < 32; ++i) {
+        sprintf(&output[i * 2], "%02x", buffer[i]);
+    }
+    output[64] = '\0'; // null terminator
+}
+
+connected_users_ll *add_connected_user(int user_id, int socket_fd) {
     connected_users_ll *curr = connected_users;
     while (curr != NULL) {
         if (curr->user_id == user_id) {
             curr->socket_fd = socket_fd;
-            return;
+            return curr;
         }
         curr = curr->next;
     }
@@ -53,11 +70,14 @@ void add_connected_user(int user_id, int socket_fd) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
-
+    char *session_token = malloc(sizeof(char) * 65);
+    generate_session_token(session_token);
     new_node->user_id = user_id;
     new_node->socket_fd = socket_fd;
     new_node->next = connected_users;
+    new_node->session_token = session_token;
     connected_users = new_node;
+    return new_node;
 }
 
 int is_user_connected(int user_id) {
@@ -85,7 +105,7 @@ int get_socket_by_user_id(int user_id) {
 void remove_connected_user(int user_id) {
     connected_users_ll *curr = connected_users;
     connected_users_ll *prev = NULL;
-
+    free(curr->session_token);
     while (curr != NULL) {
         if (curr->user_id == user_id) {
             if (prev == NULL) {
@@ -262,22 +282,12 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
-        if (send(client_sock, "OK\n", 3, 0) <= 0) {
-            perror("send failed");
-            close(client_sock);
-            return;
-        }
     } else if (strcmp(type, "REGISTER") == 0) {
 
         pthread_mutex_lock(&data_lock);
         user_id = register_user(conn, username, hash);
         if (user_id != -1) {
             pthread_mutex_unlock(&data_lock);
-            if (send(client_sock, "OK\n", 3, 0) <= 0) {
-                perror("send failed");
-                close(client_sock);
-                return;
-            }
         } else {
             pthread_mutex_unlock(&data_lock);
             send(client_sock, "ERROR: user exists\n", 19, 0);
@@ -289,22 +299,43 @@ void handle_client(int client_sock) {
         close(client_sock);
         return;
     }
-    add_connected_user(user_id, client_sock);
+    connected_users_ll *user_node = add_connected_user(user_id, client_sock);
+
+    char cookie_buff[255];
+    snprintf(cookie_buff, 255, "OK\nSetCookie: %s", user_node->session_token);
+    if (send(client_sock, cookie_buff, 255, 0) <= 0) {
+        perror("send failed");
+        remove_connected_user(user_id);
+        user_node = 0;
+        close(client_sock);
+        return;
+    }
 
     // Choose chat partner
     bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received <= 0) {
         perror("recv failed");
         remove_connected_user(user_id);
+        user_node = 0;
         close(client_sock);
         return;
     }
     buffer[bytes_received] = '\0';
+    if (strncmp(buffer, user_node->session_token, 64) != 0) {
+        send(client_sock, "ERROR: invalid cookie\n", 24, 0);
+        remove_connected_user(user_id);
+        user_node = 0;
+        close(client_sock);
+        return;
+    }
 
-    if (strncmp(buffer, "CHATWITH ", 9) == 0) {
-        if (sscanf(buffer + 9, "%15s", peer_username) != 1) {
+    char *no_cookie_buff = buffer + 65;
+
+    if (strncmp(no_cookie_buff, "CHATWITH ", 9) == 0) {
+        if (sscanf(no_cookie_buff + 9, "%15s", peer_username) != 1) {
             send(client_sock, "ERROR: invalid username format\n", 31, 0);
             remove_connected_user(user_id);
+            user_node = 0;
             close(client_sock);
             return;
         }
@@ -316,12 +347,14 @@ void handle_client(int client_sock) {
         if (peer_id == -1) {
             send(client_sock, "ERROR: user not found\n", 22, 0);
             remove_connected_user(user_id);
+            user_node = 0;
             close(client_sock);
             return;
         }
         if (send(client_sock, "OK\n", 3, 0) <= 0) {
             perror("send failed");
             remove_connected_user(user_id);
+            user_node = 0;
             close(client_sock);
             return;
         }
@@ -340,10 +373,20 @@ void handle_client(int client_sock) {
         }
         buffer[bytes_received] = '\0';
 
+        if (strncmp(buffer, user_node->session_token, 64) != 0) {
+            send(client_sock, "ERROR: invalid cookie\n", 24, 0);
+            remove_connected_user(user_id);
+            user_node = 0;
+            close(client_sock);
+            return;
+        }
+
+        char *no_cookie_buff = buffer + 65;
+
         Message msg = {0};
         msg.sender_id = user_id;
         msg.receiver_id = peer_id;
-        strncpy(msg.message, buffer, MESSAGE_MAX);
+        strncpy(msg.message, no_cookie_buff , MESSAGE_MAX);
         pthread_mutex_lock(&data_lock);
         int message_id =
             insert_msg(conn, msg.sender_id, msg.receiver_id, msg.message);
@@ -353,10 +396,15 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
-		// to_do think if we want to just send messages of users are connected 1 to 1, send unread messages on connect change when messages are read to read
+        // to_do think if we want to just send messages of users are connected 1
+        // to 1, send unread messages on connect change when messages are read
+        // to read
         int peer_fd = get_socket_by_user_id(peer_id);
+        int max_len = bytes_received + 2 + USERNAME_MAX;
+        char out_buff[max_len];
+        snprintf(out_buff, max_len, "%s: %s", username, msg.message);
         if (peer_fd != -1) {
-            if (send(peer_fd, msg.message, bytes_received, 0) == -1) {
+            if (send(peer_fd, out_buff, max_len, 0) == -1) {
                 perror("send failed");
             }
         }
@@ -366,6 +414,7 @@ void handle_client(int client_sock) {
     }
 
     remove_connected_user(user_id);
+    user_node = 0;
     close(client_sock);
 }
 

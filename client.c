@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -7,7 +8,6 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <errno.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -15,7 +15,8 @@
 
 #define BUFFER_SIZE 512
 #define USERNAME_MAX 16
-#define MESSAGE_MAX 255
+#define MESSAGE_MAX 512
+#define INPUT_MAX 255
 
 typedef struct {
     uint64_t timestamp;
@@ -47,8 +48,8 @@ void discover_server(char *server_ip) {
     }
 
     const char *query = "DISCOVER_SERVER";
-    ssize_t sent = sendto(sock, query, strlen(query), 0, 
-                         (struct sockaddr *)&addr, sizeof(addr));
+    ssize_t sent = sendto(sock, query, strlen(query), 0,
+                          (struct sockaddr *)&addr, sizeof(addr));
     if (sent < 0) {
         perror("sendto failed");
         close(sock);
@@ -59,14 +60,14 @@ void discover_server(char *server_ip) {
     socklen_t fromlen = sizeof(from);
     char buf[BUFFER_SIZE] = {0};
 
-    ssize_t received = recvfrom(sock, buf, sizeof(buf) - 1, 0, 
-                               (struct sockaddr *)&from, &fromlen);
+    ssize_t received = recvfrom(sock, buf, sizeof(buf) - 1, 0,
+                                (struct sockaddr *)&from, &fromlen);
     if (received < 0) {
         perror("recvfrom failed");
         close(sock);
         exit(EXIT_FAILURE);
     }
-    buf[received] = '\0';  // Ensure null-termination
+    buf[received] = '\0'; // Ensure null-termination
 
     if (strncmp(buf, "theNextMessenger[", 17) == 0) {
         if (sscanf(buf, "theNextMessenger[%31[^]]", server_ip) != 1) {
@@ -94,7 +95,7 @@ int connect_to_server(const char *server_ip) {
     struct sockaddr_in serv_addr = {0};
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(TCP_PORT);
-    
+
     if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0) {
         perror("inet_pton failed");
         close(sock);
@@ -132,20 +133,21 @@ void handle_incoming_messages(int sock) {
                 printf("Server disconnected\n");
                 exit(EXIT_FAILURE);
             }
-            buffer[n] = '\0';  // Ensure null-termination
+            buffer[n] = '\0';
             printf("\n[Server]: %s\nYou: ", buffer);
             fflush(stdout);
         }
     }
 }
 
-void chat_loop(int sock) {
+void chat_loop(int sock, char *session_token) {
     fd_set read_fds;
-    char input[MESSAGE_MAX] = {0};
+    char input[INPUT_MAX] = {0};
 
     // Clear any leftover newline from previous inputs
     int c;
-    while ((c = getchar()) != '\n' && c != EOF);
+    while ((c = getchar()) != '\n' && c != EOF)
+        ;
 
     while (1) {
         printf("You: ");
@@ -157,7 +159,8 @@ void chat_loop(int sock) {
 
         int retval = select(sock + 1, &read_fds, NULL, NULL, NULL);
         if (retval < 0) {
-            if (errno == EINTR) continue;  // Interrupted system call
+            if (errno == EINTR)
+                continue; // Interrupted system call
             perror("select failed");
             break;
         }
@@ -173,8 +176,8 @@ void chat_loop(int sock) {
                 printf("\nServer disconnected\n");
                 break;
             }
-            buffer[n] = '\0';  // Ensure null-termination
-            printf("\n[Incoming]: %s\n", buffer);
+            buffer[n] = '\0'; // Ensure null-termination
+            printf("\n%s\n", buffer);
         }
 
         // Then check for user input
@@ -188,14 +191,17 @@ void chat_loop(int sock) {
                 break;
             }
 
-            input[strcspn(input, "\n")] = '\0';
+            char out_buff[MESSAGE_MAX];
+            snprintf(out_buff, MESSAGE_MAX, "%s %s", session_token, input);
 
-            if (strcmp(input, "/quit") == 0) {
+            out_buff[strcspn(out_buff, "\n")] = '\0';
+
+            if (strcmp(input, "/quit\n") == 0) {
                 printf("Quitting...\n");
                 break;
             }
 
-            ssize_t sent = send(sock, input, strlen(input), 0);
+            ssize_t sent = send(sock, out_buff, strlen(out_buff), 0);
             if (sent < 0) {
                 perror("send failed");
                 break;
@@ -258,6 +264,15 @@ int main() {
     }
     buffer[received] = '\0';
     printf("Server: %s\n", buffer);
+    char *token_prefix = "SetCookie: ";
+    char *token_start = strstr(buffer, token_prefix);
+    if (token_start) {
+        token_start += strlen(token_prefix);
+        // printf("Received token: %s\n", token_start);
+    }
+    char *session_token = malloc(sizeof(char) * 65);
+    strncpy(session_token, token_start, 65);
+    session_token[64] = 0;
 
     // Choose chat partner
     printf("Enter user to chat with: ");
@@ -267,7 +282,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    snprintf(buffer, sizeof(buffer), "CHATWITH %s", username);
+    snprintf(buffer, sizeof(buffer), "%s CHATWITH %s", session_token, username);
     sent = send(sock, buffer, strlen(buffer), 0);
     if (sent < 0) {
         perror("send failed");
@@ -285,7 +300,7 @@ int main() {
     printf("Server: %s\n", buffer);
 
     // Start chat
-    chat_loop(sock);
+    chat_loop(sock, session_token);
 
     close(sock);
     return EXIT_SUCCESS;

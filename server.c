@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <openssl/sha.h>
 
 #define MULTICAST_ADDR "239.0.0.1"
 #define MULTICAST_PORT 12345
@@ -208,6 +209,14 @@ int register_user(PGconn *conn, const char *username, const char *password) {
     return user_id;
 }
 
+void hash_password(const char *password, char *output) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256((unsigned char *)password, strlen(password), hash);
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+        sprintf(output + (i * 2), "%02x", hash[i]);
+    output[64] = '\0';
+}
+
 void handle_client(int client_sock) {
     int user_id;
     int peer_id;
@@ -239,9 +248,13 @@ void handle_client(int client_sock) {
         close(client_sock);
         return;
     }
+
+    char hash[64];
+    hash_password(password, hash);
+
     if (strcmp(type, "LOGIN") == 0) {
         pthread_mutex_lock(&data_lock);
-        user_id = check_login(conn, username, password);
+        user_id = check_login(conn, username, hash);
         pthread_mutex_unlock(&data_lock);
 
         if (user_id == -1) {
@@ -257,7 +270,7 @@ void handle_client(int client_sock) {
     } else if (strcmp(type, "REGISTER") == 0) {
 
         pthread_mutex_lock(&data_lock);
-        user_id = register_user(conn, username, password);
+        user_id = register_user(conn, username, hash);
         if (user_id != -1) {
             pthread_mutex_unlock(&data_lock);
             if (send(client_sock, "OK\n", 3, 0) <= 0) {

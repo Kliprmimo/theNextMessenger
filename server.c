@@ -36,6 +36,7 @@ typedef struct {
     int sender_id;
     int receiver_id;
     char message[MESSAGE_MAX + 1];
+    int status;
 } __attribute__((packed)) Message;
 
 pthread_mutex_t data_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -167,20 +168,23 @@ int check_login(PGconn *conn, const char *username, const char *password) {
 }
 
 int insert_msg(PGconn *conn, int sender_id, int receiver_id,
-               const char *message) {
-    char sender_str[sizeof(int) + 1];
-    char receiver_str[sizeof(int) + 1];
+    const char *message, int status) {
+
+    char sender_str[12];   
+    char receiver_str[12];
+    char status_str[6];
 
     snprintf(sender_str, sizeof(sender_str), "%d", sender_id);
     snprintf(receiver_str, sizeof(receiver_str), "%d", receiver_id);
+    snprintf(status_str, sizeof(status_str), "%s", status ? "true" : "false");
 
-    const char *insertParams[3] = {sender_str, receiver_str, message};
+    const char *insertParams[4] = {sender_str, receiver_str, message, status_str};
 
     PGresult *res =
-        PQexecParams(conn,
-                     "INSERT INTO messages (sender_id, receiver_id, message) "
-                     "VALUES ($1, $2, $3) RETURNING id",
-                     3, NULL, insertParams, NULL, NULL, 0);
+    PQexecParams(conn,
+            "INSERT INTO messages (sender_id, receiver_id, message, was_seen) "
+            "VALUES ($1, $2, $3, $4) RETURNING id",
+            4, NULL, insertParams, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Insert failed: %s\n", PQerrorMessage(conn));
@@ -386,10 +390,11 @@ void handle_client(int client_sock) {
         Message msg = {0};
         msg.sender_id = user_id;
         msg.receiver_id = peer_id;
+        msg.status = is_user_connected(peer_id);
         strncpy(msg.message, no_cookie_buff , MESSAGE_MAX);
         pthread_mutex_lock(&data_lock);
         int message_id =
-            insert_msg(conn, msg.sender_id, msg.receiver_id, msg.message);
+            insert_msg(conn, msg.sender_id, msg.receiver_id, msg.message, msg.status);
         pthread_mutex_unlock(&data_lock);
         if (message_id < 0) {
             remove_connected_user(user_id);

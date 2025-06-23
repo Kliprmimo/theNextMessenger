@@ -274,34 +274,67 @@ int main() {
     strncpy(session_token, token_start, 65);
     session_token[64] = 0;
 
-    // Choose chat partner
-    printf("Enter user to chat with: ");
-    if (scanf("%15s", username) != 1) {
-        fprintf(stderr, "Failed to read recipient username\n");
-        close(sock);
-        exit(EXIT_FAILURE);
+    while(1){
+        int choice2;
+        printf("1. Read unseen messages\n2. Start chat\n");
+        if (scanf("%d", &choice2) != 1) {
+            fprintf(stderr, "Failed to read second choice\n");
+            close(sock);
+            exit(EXIT_FAILURE);
+        }
+
+        if (choice2 == 1){
+            snprintf(buffer, sizeof(buffer), "%s GET_UNREAD %s", session_token, username);
+            sent = send(sock, buffer, strlen(buffer), 0);
+            if (sent < 0) {
+                perror("send failed");
+                close(sock);
+                exit(EXIT_FAILURE);
+            }
+
+            received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (received < 0) {
+                perror("recv failed");
+                close(sock);
+                exit(EXIT_FAILURE);
+            }
+            buffer[received] = '\0';
+            printf("Messages:\n%s", buffer);
+        }
+        else if (choice2 == 2){
+            // Choose chat partner
+            printf("Enter user to chat with: ");
+            if (scanf("%15s", username) != 1) {
+                fprintf(stderr, "Failed to read recipient username\n");
+                close(sock);
+                exit(EXIT_FAILURE);
+            }
+
+            snprintf(buffer, sizeof(buffer), "%s CHATWITH %s", session_token, username);
+            sent = send(sock, buffer, strlen(buffer), 0);
+            if (sent < 0) {
+                perror("send failed");
+                close(sock);
+                exit(EXIT_FAILURE);
+            }
+
+            received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (received < 0) {
+                perror("recv failed");
+                close(sock);
+                exit(EXIT_FAILURE);
+            }
+            buffer[received] = '\0';
+            printf("Server: %s\n", buffer);
+
+            // Start chat
+            chat_loop(sock, session_token);
+
+            close(sock);
+            return EXIT_SUCCESS;
+        }
+        else{
+            printf("Undefined choise\nTry again(1,2)\n");
+        }
     }
-
-    snprintf(buffer, sizeof(buffer), "%s CHATWITH %s", session_token, username);
-    sent = send(sock, buffer, strlen(buffer), 0);
-    if (sent < 0) {
-        perror("send failed");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-
-    received = recv(sock, buffer, sizeof(buffer) - 1, 0);
-    if (received < 0) {
-        perror("recv failed");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    buffer[received] = '\0';
-    printf("Server: %s\n", buffer);
-
-    // Start chat
-    chat_loop(sock, session_token);
-
-    close(sock);
-    return EXIT_SUCCESS;
 }

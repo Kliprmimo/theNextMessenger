@@ -241,6 +241,83 @@ void hash_password(const char *password, char *output) {
     output[64] = '\0';
 }
 
+char* get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
+    char receiver_id_str[12];
+    snprintf(receiver_id_str, sizeof(receiver_id_str), "%d", receiver_id);
+    const char *paramValues[1] = { receiver_id_str };
+
+    PGresult *res = PQexecParams(conn,
+        "SELECT "
+        "  s.username AS sender, "
+        "  r.username AS receiver, "
+        "  TO_CHAR(m.message_timestamp, 'YYYY-MM-DD HH24:MI') AS msg_time, "
+        "  m.message, "
+        "  m.id "
+        "FROM messages m "
+        "JOIN users s ON m.sender_id = s.id::text "
+        "JOIN users r ON m.receiver_id = r.id::text "
+        "WHERE m.was_seen = false AND m.receiver_id = $1 "
+        "ORDER BY m.message_timestamp DESC",
+        1, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Query failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return NULL;
+    }
+
+    int rows = PQntuples(res);
+    if (rows == 0) {
+        PQclear(res);
+        return strdup("No new messages\n");
+    }
+
+    size_t total_size = 0;
+    for (int i = 0; i < rows; i++) {
+        total_size += strlen(PQgetvalue(res, i, 0)) + 2 +
+                      strlen(PQgetvalue(res, i, 1)) + 2 +
+                      strlen(PQgetvalue(res, i, 2)) + 3 + 
+                      strlen(PQgetvalue(res, i, 3)) + 1;
+    }
+
+    char *result = malloc(total_size + 1);
+    if (!result) {
+        fprintf(stderr, "Memory allocation failed\n");
+        PQclear(res);
+        return NULL;
+    }
+
+    result[0] = "\0";
+
+    char update_query[1024] = "UPDATE messages SET was_seen = true WHERE id IN (";
+
+    for (int i = 0; i < rows; i++) {
+        strcat(result, PQgetvalue(res, i, 0));  // sender
+        strcat(result, "->");
+        strcat(result, PQgetvalue(res, i, 1));  // receiver
+        strcat(result, " [");
+        strcat(result, PQgetvalue(res, i, 2));  // timestamp
+        strcat(result, "] ");
+        strcat(result, PQgetvalue(res, i, 3));  // message
+        strcat(result, "\n");
+
+        strcat(update_query, PQgetvalue(res, i, 4)); // message id
+        if (i < rows - 1) strcat(update_query, ",");
+    }
+    strcat(update_query, ")");
+
+    PQclear(res);
+
+    PGresult *update_res = PQexec(conn, update_query);
+    if (PQresultStatus(update_res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to update was_seen: %s\n", PQerrorMessage(conn));
+    }
+    PQclear(update_res);
+
+    return result;
+}
+
+
 void handle_client(int client_sock) {
     int user_id;
     int peer_id;
@@ -315,7 +392,7 @@ void handle_client(int client_sock) {
         return;
     }
 
-    // Choose chat partner
+    // Choose operation
     bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received <= 0) {
         perror("recv failed");
@@ -325,7 +402,15 @@ void handle_client(int client_sock) {
         return;
     }
     buffer[bytes_received] = '\0';
-    if (strncmp(buffer, user_node->session_token, 64) != 0) {
+
+    char type2[32], client_cookie[255];
+    if (sscanf(buffer, "%255s %31s %31s", client_cookie, type2, peer_username) != 3) {
+        send(client_sock, "ERROR: Invalid input format.\n", 30, 0);
+        close(client_sock);
+        return;
+    }
+
+    if (strcmp(client_cookie, user_node->session_token) != 0) {
         send(client_sock, "ERROR: invalid cookie\n", 24, 0);
         remove_connected_user(user_id);
         user_node = 0;
@@ -333,17 +418,22 @@ void handle_client(int client_sock) {
         return;
     }
 
-    char *no_cookie_buff = buffer + 65;
-
-    if (strncmp(no_cookie_buff, "CHATWITH ", 9) == 0) {
-        if (sscanf(no_cookie_buff + 9, "%15s", peer_username) != 1) {
-            send(client_sock, "ERROR: invalid username format\n", 31, 0);
-            remove_connected_user(user_id);
-            user_node = 0;
-            close(client_sock);
-            return;
+    if (strcmp(type2, "GET_UNREAD") != 3){
+        peer_id = get_id(conn, peer_username);
+        char *messages = get_unseen_messages_for_user(conn, peer_id);
+        if (messages) {
+            if (send(client_sock, messages, strlen(messages), 0) < 0) {
+                perror("send failed");
+                remove_connected_user(user_id);
+                user_node = 0;
+                close(client_sock);
+                return;
+            }
+            free(messages);
         }
+    
 
+    }else if (strcmp(type2, "CHATWITH") == 0) {
         pthread_mutex_lock(&data_lock);
         peer_id = get_id(conn, peer_username);
         pthread_mutex_unlock(&data_lock);

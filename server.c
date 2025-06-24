@@ -107,6 +107,7 @@ void remove_connected_user(int user_id) {
     connected_users_ll *curr = connected_users;
     connected_users_ll *prev = NULL;
     free(curr->session_token);
+    curr->session_token = 0;
     while (curr != NULL) {
         if (curr->user_id == user_id) {
             if (prev == NULL) {
@@ -115,6 +116,7 @@ void remove_connected_user(int user_id) {
                 prev->next = curr->next;
             }
             free(curr);
+            curr = 0;
             return;
         }
         prev = curr;
@@ -168,9 +170,9 @@ int check_login(PGconn *conn, const char *username, const char *password) {
 }
 
 int insert_msg(PGconn *conn, int sender_id, int receiver_id,
-    const char *message, int status) {
+               const char *message, int status) {
 
-    char sender_str[12];   
+    char sender_str[12];
     char receiver_str[12];
     char status_str[6];
 
@@ -178,13 +180,14 @@ int insert_msg(PGconn *conn, int sender_id, int receiver_id,
     snprintf(receiver_str, sizeof(receiver_str), "%d", receiver_id);
     snprintf(status_str, sizeof(status_str), "%s", status ? "true" : "false");
 
-    const char *insertParams[4] = {sender_str, receiver_str, message, status_str};
+    const char *insertParams[4] = {sender_str, receiver_str, message,
+                                   status_str};
 
-    PGresult *res =
-    PQexecParams(conn,
-            "INSERT INTO messages (sender_id, receiver_id, message, was_seen) "
-            "VALUES ($1, $2, $3, $4) RETURNING id",
-            4, NULL, insertParams, NULL, NULL, 0);
+    PGresult *res = PQexecParams(
+        conn,
+        "INSERT INTO messages (sender_id, receiver_id, message, was_seen) "
+        "VALUES ($1, $2, $3, $4) RETURNING id",
+        4, NULL, insertParams, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Insert failed: %s\n", PQerrorMessage(conn));
@@ -241,12 +244,13 @@ void hash_password(const char *password, char *output) {
     output[64] = '\0';
 }
 
-char* get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
+char *get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
     char receiver_id_str[12];
     snprintf(receiver_id_str, sizeof(receiver_id_str), "%d", receiver_id);
-    const char *paramValues[1] = { receiver_id_str };
+    const char *paramValues[1] = {receiver_id_str};
 
-    PGresult *res = PQexecParams(conn,
+    PGresult *res = PQexecParams(
+        conn,
         "SELECT "
         "  s.username AS sender, "
         "  r.username AS receiver, "
@@ -276,33 +280,33 @@ char* get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
     for (int i = 0; i < rows; i++) {
         total_size += strlen(PQgetvalue(res, i, 0)) + 2 +
                       strlen(PQgetvalue(res, i, 1)) + 2 +
-                      strlen(PQgetvalue(res, i, 2)) + 3 + 
+                      strlen(PQgetvalue(res, i, 2)) + 3 +
                       strlen(PQgetvalue(res, i, 3)) + 1;
     }
 
-    char *result = malloc(total_size + 1);
+    char *result = calloc(sizeof(char) * total_size + 1, 1);
     if (!result) {
         fprintf(stderr, "Memory allocation failed\n");
         PQclear(res);
         return NULL;
     }
 
-    result[0] = "\0";
-
-    char update_query[1024] = "UPDATE messages SET was_seen = true WHERE id IN (";
+    char update_query[1024] =
+        "UPDATE messages SET was_seen = true WHERE id IN (";
 
     for (int i = 0; i < rows; i++) {
-        strcat(result, PQgetvalue(res, i, 0));  // sender
+        strcat(result, PQgetvalue(res, i, 0)); // sender
         strcat(result, "->");
-        strcat(result, PQgetvalue(res, i, 1));  // receiver
+        strcat(result, PQgetvalue(res, i, 1)); // receiver
         strcat(result, " [");
-        strcat(result, PQgetvalue(res, i, 2));  // timestamp
+        strcat(result, PQgetvalue(res, i, 2)); // timestamp
         strcat(result, "] ");
-        strcat(result, PQgetvalue(res, i, 3));  // message
+        strcat(result, PQgetvalue(res, i, 3)); // message
         strcat(result, "\n");
 
         strcat(update_query, PQgetvalue(res, i, 4)); // message id
-        if (i < rows - 1) strcat(update_query, ",");
+        if (i < rows - 1)
+            strcat(update_query, ",");
     }
     strcat(update_query, ")");
 
@@ -310,13 +314,13 @@ char* get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
 
     PGresult *update_res = PQexec(conn, update_query);
     if (PQresultStatus(update_res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Failed to update was_seen: %s\n", PQerrorMessage(conn));
+        fprintf(stderr, "Failed to update was_seen: %s\n",
+                PQerrorMessage(conn));
     }
     PQclear(update_res);
 
     return result;
 }
-
 
 void handle_client(int client_sock) {
     int user_id;
@@ -392,65 +396,64 @@ void handle_client(int client_sock) {
         return;
     }
 
-    // Choose operation
-    bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
-    if (bytes_received <= 0) {
-        perror("recv failed");
-        remove_connected_user(user_id);
-        user_node = 0;
-        close(client_sock);
-        return;
-    }
-    buffer[bytes_received] = '\0';
+    while (1) {
+        // Choose operation
+        bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received <= 0) {
+            perror("recv failed");
+            remove_connected_user(user_id);
+            user_node = 0;
+            close(client_sock);
+            return;
+        }
+        buffer[bytes_received] = '\0';
 
-    char type2[32], client_cookie[255];
-    if (sscanf(buffer, "%255s %31s %31s", client_cookie, type2, peer_username) != 3) {
-        send(client_sock, "ERROR: Invalid input format.\n", 30, 0);
-        close(client_sock);
-        return;
-    }
+        char type2[32], client_cookie[256];
+        if (sscanf(buffer, "%255s %31s %15s", client_cookie, type2,
+                   peer_username) != 3) {
+            send(client_sock, "ERROR: Invalid input format.\n", 30, 0);
+            close(client_sock);
+            return;
+        }
 
-    if (strcmp(client_cookie, user_node->session_token) != 0) {
-        send(client_sock, "ERROR: invalid cookie\n", 24, 0);
-        remove_connected_user(user_id);
-        user_node = 0;
-        close(client_sock);
-        return;
-    }
+        if (strcmp(client_cookie, user_node->session_token) != 0) {
+            send(client_sock, "ERROR: invalid cookie\n", 24, 0);
+            remove_connected_user(user_id);
+            close(client_sock);
+            return;
+        }
 
-    if (strcmp(type2, "GET_UNREAD") != 3){
-        peer_id = get_id(conn, peer_username);
-        char *messages = get_unseen_messages_for_user(conn, peer_id);
-        if (messages) {
-            if (send(client_sock, messages, strlen(messages), 0) < 0) {
-                perror("send failed");
+        if (strcmp(type2, "GET_UNREAD") == 0) {
+            peer_id = get_id(conn, peer_username);
+            char *messages = get_unseen_messages_for_user(conn, peer_id);
+            if (messages) {
+                if (send(client_sock, messages, strlen(messages), 0) < 0) {
+                    perror("send failed");
+                    remove_connected_user(user_id);
+                    close(client_sock);
+                    return;
+                }
+                free(messages);
+            }
+
+        } else if (strcmp(type2, "CHATWITH") == 0) {
+            pthread_mutex_lock(&data_lock);
+            peer_id = get_id(conn, peer_username);
+            pthread_mutex_unlock(&data_lock);
+
+            if (peer_id == -1) {
+                send(client_sock, "ERROR: user not found\n", 22, 0);
                 remove_connected_user(user_id);
-                user_node = 0;
                 close(client_sock);
                 return;
             }
-            free(messages);
-        }
-    
-
-    }else if (strcmp(type2, "CHATWITH") == 0) {
-        pthread_mutex_lock(&data_lock);
-        peer_id = get_id(conn, peer_username);
-        pthread_mutex_unlock(&data_lock);
-
-        if (peer_id == -1) {
-            send(client_sock, "ERROR: user not found\n", 22, 0);
-            remove_connected_user(user_id);
-            user_node = 0;
-            close(client_sock);
-            return;
-        }
-        if (send(client_sock, "OK\n", 3, 0) <= 0) {
-            perror("send failed");
-            remove_connected_user(user_id);
-            user_node = 0;
-            close(client_sock);
-            return;
+            if (send(client_sock, "OK\n", 3, 0) <= 0) {
+                perror("send failed");
+                remove_connected_user(user_id);
+                close(client_sock);
+                return;
+            }
+            break;
         }
     }
 
@@ -470,7 +473,6 @@ void handle_client(int client_sock) {
         if (strncmp(buffer, user_node->session_token, 64) != 0) {
             send(client_sock, "ERROR: invalid cookie\n", 24, 0);
             remove_connected_user(user_id);
-            user_node = 0;
             close(client_sock);
             return;
         }
@@ -481,10 +483,10 @@ void handle_client(int client_sock) {
         msg.sender_id = user_id;
         msg.receiver_id = peer_id;
         msg.status = is_user_connected(peer_id);
-        strncpy(msg.message, no_cookie_buff , MESSAGE_MAX);
+        strncpy(msg.message, no_cookie_buff, MESSAGE_MAX);
         pthread_mutex_lock(&data_lock);
-        int message_id =
-            insert_msg(conn, msg.sender_id, msg.receiver_id, msg.message, msg.status);
+        int message_id = insert_msg(conn, msg.sender_id, msg.receiver_id,
+                                    msg.message, msg.status);
         pthread_mutex_unlock(&data_lock);
         if (message_id < 0) {
             remove_connected_user(user_id);
@@ -509,7 +511,6 @@ void handle_client(int client_sock) {
     }
 
     remove_connected_user(user_id);
-    user_node = 0;
     close(client_sock);
 }
 

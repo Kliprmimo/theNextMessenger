@@ -274,7 +274,7 @@ int main() {
     strncpy(session_token, token_start, 65);
     session_token[64] = 0;
 
-    while(1){
+    while (1) {
         int choice2;
         printf("1. Read unseen messages\n2. Start chat\n");
         if (scanf("%d", &choice2) != 1) {
@@ -283,8 +283,9 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        if (choice2 == 1){
-            snprintf(buffer, sizeof(buffer), "%s GET_UNREAD %s", session_token, username);
+        if (choice2 == 1) {
+            snprintf(buffer, sizeof(buffer), "%s GET_UNREAD %s", session_token,
+                     username);
             sent = send(sock, buffer, strlen(buffer), 0);
             if (sent < 0) {
                 perror("send failed");
@@ -300,8 +301,7 @@ int main() {
             }
             buffer[received] = '\0';
             printf("Messages:\n%s", buffer);
-        }
-        else if (choice2 == 2){
+        } else if (choice2 == 2) {
             // Choose chat partner
             printf("Enter user to chat with: ");
             if (scanf("%15s", username) != 1) {
@@ -310,7 +310,8 @@ int main() {
                 exit(EXIT_FAILURE);
             }
 
-            snprintf(buffer, sizeof(buffer), "%s CHATWITH %s", session_token, username);
+            snprintf(buffer, sizeof(buffer), "%s CHATWITH %s", session_token,
+                     username);
             sent = send(sock, buffer, strlen(buffer), 0);
             if (sent < 0) {
                 perror("send failed");
@@ -332,8 +333,7 @@ int main() {
 
             close(sock);
             return EXIT_SUCCESS;
-        }
-        else{
+        } else {
             printf("Undefined choise\nTry again(1,2)\n");
         }
     }

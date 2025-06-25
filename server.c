@@ -169,8 +169,7 @@ int check_login(PGconn *conn, const char *username, const char *password) {
     return -1;
 }
 
-int insert_msg(PGconn *conn, int sender_id, int receiver_id,
-               const char *message, int status) {
+nfrnsk.ltqytk.,_BITS_TIME64_H
 
     char sender_str[12];
     char receiver_str[12];
@@ -493,9 +492,7 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
-        // to_do think if we want to just send messages of users are connected 1
-        // to 1, send unread messages on connect change when messages are read
-        // to read
+
         int peer_fd = get_socket_by_user_id(peer_id);
         int max_len = bytes_received + 2 + USERNAME_MAX;
         char out_buff[max_len];

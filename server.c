@@ -261,7 +261,7 @@ char *get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
         "JOIN users s ON m.sender_id = s.id::text "
         "JOIN users r ON m.receiver_id = r.id::text "
         "WHERE m.was_seen = false AND m.receiver_id = $1 "
-        "ORDER BY m.message_timestamp DESC",
+        "ORDER BY m.message_timestamp ASC",
         1, NULL, paramValues, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
@@ -363,7 +363,7 @@ void handle_client(int client_sock) {
         pthread_mutex_unlock(&data_lock);
 
         if (user_id == -1) {
-            send(client_sock, "ERROR: user not found\n", 22, 0);
+            send(client_sock, "ERROR: Bad credentials\n", 22, 0);
             close(client_sock);
             return;
         }

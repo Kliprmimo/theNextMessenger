@@ -132,7 +132,7 @@ void chat_loop(int sock, char *session_token) {
         int retval = select(sock + 1, &read_fds, NULL, NULL, NULL);
         if (retval < 0) {
             if (errno == EINTR)
-                continue; // Interrupted system call
+                continue; 
             perror("select failed");
             break;
         }
@@ -148,11 +148,11 @@ void chat_loop(int sock, char *session_token) {
                 printf("\nServer disconnected\n");
                 break;
             }
-            buffer[n] = '\0'; // Ensure null-termination
+            buffer[n] = '\0';
             printf("\n%s\n", buffer);
         }
 
-        // Then check for user input
+        // check for user input
         if (FD_ISSET(STDIN_FILENO, &read_fds)) {
             if (fgets(input, sizeof(input), stdin) == NULL) {
                 if (feof(stdin)) {

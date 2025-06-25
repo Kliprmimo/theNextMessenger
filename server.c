@@ -53,7 +53,7 @@ void generate_session_token(char *output) {
     for (int i = 0; i < 32; ++i) {
         sprintf(&output[i * 2], "%02x", buffer[i]);
     }
-    output[64] = '\0'; // null terminator
+    output[64] = '\0';
 }
 
 connected_users_ll *add_connected_user(int user_id, int socket_fd) {

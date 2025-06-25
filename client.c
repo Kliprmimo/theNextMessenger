@@ -111,34 +111,6 @@ int connect_to_server(const char *server_ip) {
     return sock;
 }
 
-void handle_incoming_messages(int sock) {
-    char buffer[BUFFER_SIZE] = {0};
-    while (1) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-
-        struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
-        int retval = select(sock + 1, &read_fds, NULL, NULL, &tv);
-
-        if (retval == -1) {
-            perror("select failed");
-            exit(EXIT_FAILURE);
-        } else if (retval > 0) {
-            ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
-            if (n < 0) {
-                perror("recv failed");
-                exit(EXIT_FAILURE);
-            } else if (n == 0) {
-                printf("Server disconnected\n");
-                exit(EXIT_FAILURE);
-            }
-            buffer[n] = '\0';
-            printf("\n[Server]: %s\nYou: ", buffer);
-            fflush(stdout);
-        }
-    }
-}
 
 void chat_loop(int sock, char *session_token) {
     fd_set read_fds;

@@ -106,8 +106,6 @@ int get_socket_by_user_id(int user_id) {
 void remove_connected_user(int user_id) {
     connected_users_ll *curr = connected_users;
     connected_users_ll *prev = NULL;
-    free(curr->session_token);
-    curr->session_token = 0;
     while (curr != NULL) {
         if (curr->user_id == user_id) {
             if (prev == NULL) {
@@ -115,6 +113,8 @@ void remove_connected_user(int user_id) {
             } else {
                 prev->next = curr->next;
             }
+			free(curr->session_token);
+			curr->session_token = 0;
             free(curr);
             curr = 0;
             return;
@@ -169,7 +169,8 @@ int check_login(PGconn *conn, const char *username, const char *password) {
     return -1;
 }
 
-nfrnsk.ltqytk.,_BITS_TIME64_H
+int insert_msg(PGconn *conn, int sender_id, int receiver_id,
+               const char *message, int status) {
 
     char sender_str[12];
     char receiver_str[12];
@@ -366,6 +367,12 @@ void handle_client(int client_sock) {
             close(client_sock);
             return;
         }
+		if (is_user_connected(user_id)){
+            send(client_sock, "ERROR: User already logged in\n", 32, 0);
+            close(client_sock);
+            return;
+
+		}
     } else if (strcmp(type, "REGISTER") == 0) {
 
         pthread_mutex_lock(&data_lock);
@@ -500,6 +507,9 @@ void handle_client(int client_sock) {
         if (peer_fd != -1) {
             if (send(peer_fd, out_buff, max_len, 0) == -1) {
                 perror("send failed");
+				remove_connected_user(user_id);
+				close(client_sock);
+				return;
             }
         }
 

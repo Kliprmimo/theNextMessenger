@@ -23,6 +23,7 @@
 
 typedef struct connected_users_ll connected_users_ll;
 
+// Linked list of connected users and their session info
 struct connected_users_ll {
     int user_id;
     int socket_fd;
@@ -32,6 +33,7 @@ struct connected_users_ll {
 
 connected_users_ll *connected_users = NULL;
 
+// Message struct mirroring DB insert
 typedef struct {
     int sender_id;
     int receiver_id;
@@ -41,6 +43,7 @@ typedef struct {
 
 pthread_mutex_t data_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Generate a 64‑char hex session token from /dev/urandom
 void generate_session_token(char *output) {
     unsigned char buffer[32];
     int fd = open("/dev/urandom", O_RDONLY);
@@ -56,6 +59,9 @@ void generate_session_token(char *output) {
     output[64] = '\0';
 }
 
+
+// Add a new connected user or update existing user's socket
+// Returns the node for the user
 connected_users_ll *add_connected_user(int user_id, int socket_fd) {
     connected_users_ll *curr = connected_users;
     while (curr != NULL) {
@@ -66,6 +72,7 @@ connected_users_ll *add_connected_user(int user_id, int socket_fd) {
         curr = curr->next;
     }
 
+    // First-time login: allocate new node
     connected_users_ll *new_node = malloc(sizeof(connected_users_ll));
     if (!new_node) {
         perror("malloc");
@@ -73,6 +80,7 @@ connected_users_ll *add_connected_user(int user_id, int socket_fd) {
     }
     char *session_token = malloc(sizeof(char) * 65);
     generate_session_token(session_token);
+    // Assign user ID, socket, token and insert node
     new_node->user_id = user_id;
     new_node->socket_fd = socket_fd;
     new_node->next = connected_users;
@@ -81,6 +89,7 @@ connected_users_ll *add_connected_user(int user_id, int socket_fd) {
     return new_node;
 }
 
+// Check if user is currently connected
 int is_user_connected(int user_id) {
     connected_users_ll *curr = connected_users;
     while (curr != NULL) {
@@ -92,6 +101,7 @@ int is_user_connected(int user_id) {
     return 0;
 }
 
+// Return socket descriptor for a given user_id, on error -1
 int get_socket_by_user_id(int user_id) {
     connected_users_ll *curr = connected_users;
     while (curr != NULL) {
@@ -103,6 +113,7 @@ int get_socket_by_user_id(int user_id) {
     return -1;
 }
 
+// Remove a user from the connected list, freeing token
 void remove_connected_user(int user_id) {
     connected_users_ll *curr = connected_users;
     connected_users_ll *prev = NULL;
@@ -123,6 +134,8 @@ void remove_connected_user(int user_id) {
         curr = curr->next;
     }
 }
+
+// Get from db id for specified username
 int get_id(PGconn *conn, const char *username) {
     const char *paramValues[1] = {username};
     PGresult *res =
@@ -146,6 +159,7 @@ int get_id(PGconn *conn, const char *username) {
     return user_id;
 }
 
+// Validate credentials
 int check_login(PGconn *conn, const char *username, const char *password) {
     const char *paramValues[2] = {username, password};
     PGresult *res = PQexecParams(
@@ -169,6 +183,7 @@ int check_login(PGconn *conn, const char *username, const char *password) {
     return -1;
 }
 
+// Insert message to db
 int insert_msg(PGconn *conn, int sender_id, int receiver_id,
                const char *message, int status) {
 
@@ -200,6 +215,7 @@ int insert_msg(PGconn *conn, int sender_id, int receiver_id,
     return inserted_id;
 }
 
+// Create users and automaticly login
 int register_user(PGconn *conn, const char *username, const char *password) {
     const char *checkParams[1] = {username};
     PGresult *res =
@@ -236,6 +252,7 @@ int register_user(PGconn *conn, const char *username, const char *password) {
     return user_id;
 }
 
+// Hash the pass
 void hash_password(const char *password, char *output) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256((unsigned char *)password, strlen(password), hash);
@@ -244,6 +261,7 @@ void hash_password(const char *password, char *output) {
     output[64] = '\0';
 }
 
+// Get unread messages
 char *get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
     char receiver_id_str[12];
     snprintf(receiver_id_str, sizeof(receiver_id_str), "%d", receiver_id);
@@ -290,7 +308,7 @@ char *get_unseen_messages_for_user(PGconn *conn, int receiver_id) {
         PQclear(res);
         return NULL;
     }
-
+    // Change was_seen status for those messages
     char update_query[1024] =
         "UPDATE messages SET was_seen = true WHERE id IN (";
 
@@ -354,6 +372,7 @@ void handle_client(int client_sock) {
         return;
     }
 
+    // Hash password before db calls
     char hash[64];
     hash_password(password, hash);
 
@@ -390,6 +409,7 @@ void handle_client(int client_sock) {
         close(client_sock);
         return;
     }
+    // Add user to connected list and generate session token
     connected_users_ll *user_node = add_connected_user(user_id, client_sock);
 
     char cookie_buff[255];
@@ -429,6 +449,7 @@ void handle_client(int client_sock) {
             return;
         }
 
+        // Fetch unseen messages
         if (strcmp(type2, "GET_UNREAD") == 0) {
             peer_id = get_id(conn, peer_username);
             char *messages = get_unseen_messages_for_user(conn, peer_id);
@@ -521,6 +542,7 @@ void handle_client(int client_sock) {
     close(client_sock);
 }
 
+// Accept inbound TCP connections
 void *tcp_listener(void *_) {
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -577,6 +599,7 @@ void *tcp_listener(void *_) {
     return NULL;
 }
 
+// Listen on multicast for DISCOVER_SERVER
 void *udp_discovery_responder(void *_) {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {

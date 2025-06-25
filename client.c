@@ -217,13 +217,13 @@ int main() {
     int sock = connect_to_server(server_ip);
 
     // Login/Register
-    char choice;
+    int choice;
     char username[32] = {0};
     char password[32] = {0};
     char buffer[BUFFER_SIZE] = {0};
 
-    printf("[L]ogin or [R]egister: ");
-    if (scanf(" %c", &choice) != 1) {
+    printf("1. Login\n2. Register\n");
+    if (scanf(" %d", &choice) != 1) {
         fprintf(stderr, "Failed to read choice\n");
         close(sock);
         exit(EXIT_FAILURE);
@@ -243,10 +243,13 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    if (choice == 'L' || choice == 'l') {
+    if (choice == 1) {
         snprintf(buffer, sizeof(buffer), "LOGIN %s %s", username, password);
-    } else {
+    } else if (choice == 2){
         snprintf(buffer, sizeof(buffer), "REGISTER %s %s", username, password);
+    } else{
+        printf("Wrong operation");
+        exit(EXIT_FAILURE);
     }
 
     ssize_t sent = send(sock, buffer, strlen(buffer), 0);
@@ -264,6 +267,10 @@ int main() {
     }
     buffer[received] = '\0';
     printf("Server: %s\n", buffer);
+    if (strncmp(buffer, "ERROR", 5) == 0){
+        close(sock);
+        exit(EXIT_SUCCESS);
+    }
     char *token_prefix = "SetCookie: ";
     char *token_start = strstr(buffer, token_prefix);
     if (token_start) {
